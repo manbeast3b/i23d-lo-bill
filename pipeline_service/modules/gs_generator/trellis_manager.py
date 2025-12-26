@@ -43,6 +43,52 @@ class TrellisService:
     def is_ready(self) -> bool:
         return self.pipeline is not None
 
+
+    def post_process(self, trellis_result: dict) -> dict:
+        """
+        Post process the trellis result.
+        """
+        # Extract Gaussian and mesh
+        gs = trellis_result['gaussian'][0]
+        # mesh = outputs['mesh'][0]
+        
+        # Filter out low opacity splats
+        opacity_threshold = 0.005  # Adjust threshold as needed
+        opacity_mask = gs._opacity.squeeze() > opacity_threshold
+        
+        if opacity_mask.sum() < gs._opacity.shape[0]:
+            remaining_points = opacity_mask.sum().item()
+            total_points = gs._opacity.shape[0]
+            removal_percentage = (total_points - remaining_points) / total_points * 100
+            
+            print(f"   🔍 Filtering splats: {total_points} -> {remaining_points} (removed {total_points - remaining_points} low opacity splats, {removal_percentage:.1f}%)")
+            
+            # Check if too many points were removed
+            if remaining_points < 1000:  # Less than 1000 points left
+                print(f"   ⚠️ Too few points remaining ({remaining_points}), keeping original Gaussian")
+            elif removal_percentage > 90:  # More than 90% removed
+                print(f"   ⚠️ Too many points removed ({removal_percentage:.1f}%), keeping original Gaussian")
+            else:
+                # Apply mask to all Gaussian splat parameters (check if they exist first)
+                gs._xyz = gs._xyz[opacity_mask]
+                gs._features_dc = gs._features_dc[opacity_mask]
+                gs._scaling = gs._scaling[opacity_mask]
+                gs._rotation = gs._rotation[opacity_mask]
+                gs._opacity = gs._opacity[opacity_mask]
+                
+                # Only filter _features_rest if it exists and is not None
+                if hasattr(gs, '_features_rest') and gs._features_rest is not None:
+                    gs._features_rest = gs._features_rest[opacity_mask]
+                
+                print(f"   ✅ Applied opacity filtering successfully")
+
+        else:
+            print(f"   ✅ No points removed, keeping original Gaussian")
+        trellis_result['gaussian'][0] = gs
+            
+        return trellis_result
+
+
     def generate(
         self,
         trellis_request: TrellisRequest,
@@ -75,6 +121,7 @@ class TrellisService:
             )
 
             generation_time = time.time() - start
+            outputs = self.post_process(outputs)
             gaussian = outputs["gaussian"][0]
 
             # Save ply to buffer
